@@ -1,0 +1,146 @@
+#!/system/bin/sh
+
+/system/bin/resize2fs
+
+relink_cmd() {
+  /system/bin/busybox rm /system/bin/$1
+  /system/bin/busybox ln -s /system/bin/busybox /system/bin/$1
+}
+
+ch_con() {
+  chcon -h u:object_r:system_file:s0 $1
+  chcon u:object_r:system_file:s0 $1
+}
+
+ch_con_ext() {
+  chcon $2 $1
+}
+
+set_perm() {
+  chown $1.$2 $4
+  chown $1:$2 $4
+  chmod $3 $4
+  ch_con $4
+  ch_con_ext $4 $5
+}
+
+cp_perm() {
+  rm $5
+  if [ -f "$4" ]; then
+    cp $4 $5
+    set_perm $1 $2 $3 $5 $6
+  fi
+}
+
+mkdir_perm() {
+  mkdir -p $4
+  set_perm $1 $2 $3 $4
+}
+
+# "- Mounting /system and rootfs"
+/system/bin/busybox mount -o rw,remount /
+
+# Change commands link with toolbox to busybox
+relink_cmd mount
+relink_cmd chmod
+relink_cmd chown
+relink_cmd mkdir
+relink_cmd rmdir
+relink_cmd cp
+relink_cmd rm
+relink_cmd mv
+relink_cmd tar
+relink_cmd cat
+relink_cmd ln
+relink_cmd chcon
+relink_cmd dd
+relink_cmd grep
+
+# Extract package
+cd /tmp
+mv /system/bin/partlink /system/bin/supersu.tgz
+tar zxf /system/bin/supersu.tgz
+
+SYSTEM_PARTITION=/dev/block/mmcblk0p9
+if [ -L /dev/block/platform/intel/by-label/system ]; then
+  SYSTEM_PARTITION=/dev/block/platform/intel/by-label/system
+fi
+if [ -L /dev/block/by-name/system ]; then
+  SYSTEM_PARTITION=/dev/block/by-name/system
+fi
+
+SYSTEM=/mnt/system
+BIN=x86
+COM=common
+
+mkdir $SYSTEM
+mount -o rw -t ext4 $SYSTEM_PARTITION $SYSTEM
+
+# Check parameters
+API=$(cat $SYSTEM/build.prop | grep "ro.build.version.sdk=" | dd bs=1 skip=21 count=2)
+ABILONG=$(cat $SYSTEM/build.prop /default.prop | grep -m 1 "ro.product.cpu.abi=" | dd bs=1 skip=19)
+SUPOLICY=false
+APKFOLDER=false
+APPPROCESS=false
+MKSH=$SYSTEM/bin/mksh
+APKNAME=$SYSTEM/app/Superuser.apk
+SYSTEMLIB=$SYSTEM/lib
+
+if [ "$API" -eq "$API" ]; then
+  if [ "$API" -ge "19" ]; then
+    SUPOLICY=true
+  fi
+  if [ "$API" -ge "21" ]; then
+    if [ "$ABILONG" = "x86_64" ]; then BIN=x64; SYSTEMLIB=$SYSTEM/lib64; fi;
+    APPPROCESS=true
+    APKFOLDER=true
+    APKNAME=$SYSTEM/app/SuperSU/SuperSU.apk
+  fi
+fi
+if [ ! -f $MKSH ]; then
+  MKSH=$SYSTEM/bin/sh
+fi
+
+# "- Placing files"
+mkdir_perm 0 0 0777 $SYSTEM/bin/.ext
+cp_perm 0 0 0755 $BIN/su $SYSTEM/bin/.ext/.su
+cp_perm 0 0 0755 $BIN/su $SYSTEM/xbin/su
+cp_perm 0 0 0755 $BIN/su $SYSTEM/xbin/daemonsu
+cp_perm 0 0 0755 $BIN/su $SYSTEM/xbin/sugote u:object_r:zygote_exec:s0
+cp_perm 0 0 0755 $MKSH $SYSTEM/xbin/sugote-mksh
+
+if ($SUPOLICY); then
+  cp_perm 0 0 0755 $BIN/supolicy $SYSTEM/xbin/supolicy
+  cp_perm 0 0 0644 $BIN/libsupol.so $SYSTEMLIB/libsupol.so
+fi
+
+if ($APKFOLDER); then
+  mkdir_perm 0 0 0755 $SYSTEM/app/SuperSU
+fi
+
+cp_perm 0 0 0644 $COM/Superuser.apk $APKNAME
+
+if ($APPPROCESS); then
+  rm $SYSTEM/bin/app_process
+  ln -s /system/xbin/daemonsu $SYSTEM/bin/app_process
+fi
+echo 1 > $SYSTEM/etc/.installed_su_daemon
+set_perm 0 0 0644 $SYSTEM/etc/.installed_su_daemon
+
+if [ ! -L $SYSTEM/bin/install-recovery.sh ]; then
+  cp_perm 0 0 0755 $SYSTEM/bin/install-recovery.sh $SYSTEM/bin/install-recovery-2.sh
+fi
+cp_perm 0 0 0755 $COM/install-recovery.sh $SYSTEM/etc/install-recovery.sh
+
+# "- Post-installation script"
+$SYSTEM/xbin/su --install
+
+# "- Cleaning up"
+rm /tmp/$BIN/*
+rm /tmp/$COM/*
+rmdir /tmp/$BIN
+rmdir /tmp/$COM
+rm /factory/last_fb_cmds.log
+
+# "- Done ! superSU installation complete"
+exit 1
